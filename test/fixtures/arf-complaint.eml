@@ -1,0 +1,29 @@
+From: feedback@fbl.mail-provider.example
+To: fbl@bounces.example.com
+Subject: Complaint about message from 203.0.113.10
+MIME-Version: 1.0
+Content-Type: multipart/report; report-type=feedback-report; boundary="part"
+Message-ID: <arf-123@fbl.mail-provider.example>
+
+--part
+Content-Type: text/plain
+
+This is an email abuse report.
+
+--part
+Content-Type: message/feedback-report
+
+Feedback-Type: abuse
+User-Agent: ExampleFBL/1.0
+Version: 1
+Original-Mail-From: <VERP_ADDRESS>
+Source-IP: 203.0.113.10
+
+--part
+Content-Type: text/rfc822-headers
+
+Return-Path: <VERP_ADDRESS>
+Message-ID: <6f1c2b3a-1111-4222-8333-944445555666@news.example.com>
+Subject: Reunion 2027
+
+--part--

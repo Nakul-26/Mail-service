@@ -22,12 +22,15 @@
     "handlebars": "^4.7.10",
     "nodemailer": "^10.2.1",
     "pg": "^8.23.1",
+    "smtp-server": "^3.21.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@types/nodemailer": "^8.0.2",
     "@types/pg": "^8.23.1",
+    "@types/smtp-server": "^3.5.13",
+    "mailauth": "^8.0.4",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"

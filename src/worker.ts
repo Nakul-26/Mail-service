@@ -1,11 +1,13 @@
 import { setTimeout as sleep } from 'node:timers/promises';
+import { composeMail } from './compose.js';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { classifySmtpError, retryDelayMs, type Outcome } from './delivery.js';
-import { closeRoutes, defaultRoute, routes } from './smtp.js';
+import { dkimKeyFor } from './dkim.js';
+import { closeRoutes, defaultRoute, nextHopMessageId, routes } from './smtp.js';
 import { findSuppression } from './suppressions.js';
-import { render, templates, UNSUBSCRIBE_VAR } from './templates.js';
-import { signUnsubscribe } from './unsubscribe.js';
+import { templates } from './templates.js';
+import { TokenBucket } from './token-bucket.js';
 
 interface Job {
   id: string;
@@ -26,19 +28,34 @@ interface Job {
 const LEASE = '5 minutes'; // must exceed the SMTP timeouts in smtp.ts
 let running = true;
 
-// Claims ready jobs, highest priority first. Also reclaims jobs whose lease expired
-// because a worker crashed mid-send — so delivery is at-least-once, not exactly-once.
+// Two lanes. Urgent (priority 0 OTPs, 1 transactional) is always claimed first and is not
+// rate-capped. Bulk (priority 2: batches, newsletters) only fills spare slots, at most
+// BULK_RATE_PER_SECOND, so a 10,000-recipient batch can't delay an OTP by more than one cycle.
 async function claim(limit: number): Promise<Job[]> {
+  const urgent = await claimLane('m2.priority < 2', limit);
+  const room = limit - urgent.length;
+  if (room === 0) return urgent;
+  const allowed = bulkTokens.take(room);
+  if (allowed === 0) return urgent;
+  const bulk = await claimLane('m2.priority = 2', allowed);
+  bulkTokens.refund(allowed - bulk.length);
+  return [...urgent, ...bulk];
+}
+
+// Also reclaims jobs whose lease expired because a worker crashed mid-send, so delivery is
+// at-least-once, not exactly-once.
+async function claimLane(lane: string, limit: number): Promise<Job[]> {
   const { rows } = await pool.query<Job>(
     `UPDATE messages m
         SET status = 'sending', attempts = m.attempts + 1,
             locked_until = now() + interval '${LEASE}', updated_at = now()
        FROM apps a
       WHERE a.id = m.app_id AND m.id IN (
-        SELECT id FROM messages
-         WHERE (status IN ('queued', 'deferred') AND next_attempt_at <= now())
-            OR (status = 'sending' AND locked_until < now())
-         ORDER BY priority, next_attempt_at
+        SELECT m2.id FROM messages m2
+         WHERE ${lane}
+           AND ((m2.status IN ('queued', 'deferred') AND m2.next_attempt_at <= now())
+                OR (m2.status = 'sending' AND m2.locked_until < now()))
+         ORDER BY m2.priority, m2.next_attempt_at
          LIMIT $1
          FOR UPDATE SKIP LOCKED)
       RETURNING m.id, m.app_id, m.template_id, m.from_addr, m.to_addr, m.variables,
@@ -49,14 +66,18 @@ async function claim(limit: number): Promise<Job[]> {
   return rows;
 }
 
+const bulkTokens = new TokenBucket(config.BULK_RATE_PER_SECOND);
+
+type Accepted = { kind: 'accepted'; code?: number; response: string };
+
 // Every state change is conditioned on (id, attempts) so a worker whose lease expired
 // cannot overwrite the result of the worker that took the job over.
 async function finish(
   job: Job,
   startedAt: Date,
-  status: 'sent' | 'deferred' | 'failed' | 'suppressed',
-  outcome: Outcome | { kind: 'sent'; code?: number; response: string },
-  extra: { providerMessageId?: string; retryInMs?: number } = {},
+  status: 'accepted_local' | 'deferred' | 'failed' | 'suppressed',
+  outcome: Outcome | Accepted,
+  extra: { nextHopId?: string; retryInMs?: number } = {},
 ) {
   const terminal = status !== 'deferred';
   const client = await pool.connect();
@@ -68,7 +89,7 @@ async function finish(
               last_error = $4, last_smtp_code = $5,
               provider_message_id = COALESCE($6, provider_message_id),
               route = $9,
-              sent_at = CASE WHEN $3::message_status = 'sent' THEN now() ELSE sent_at END,
+              sent_at = CASE WHEN $3::text = 'accepted_local' THEN now() ELSE sent_at END,
               next_attempt_at = CASE WHEN $7::int IS NULL THEN next_attempt_at
                                      ELSE now() + make_interval(secs => $7::int / 1000.0) END,
               variables = CASE WHEN $8::boolean THEN variables - sensitive_keys ELSE variables END
@@ -77,9 +98,9 @@ async function finish(
         job.id,
         job.attempts,
         status,
-        outcome.kind === 'sent' ? null : outcome.response,
+        outcome.kind === 'accepted' ? null : outcome.response,
         outcome.code ?? null,
-        extra.providerMessageId ?? null,
+        extra.nextHopId ?? null,
         extra.retryInMs ?? null,
         terminal,
         status === 'suppressed' ? null : job.route,
@@ -113,13 +134,22 @@ async function finish(
   }
 }
 
+// A problem with our own setup (unknown route, missing DKIM key) is not the message's fault:
+// defer so it goes out once fixed, or fails visibly after max attempts.
+function configProblem(job: Job, startedAt: Date, response: string) {
+  console.error(`message ${job.id}: ${response}`);
+  return job.attempts >= job.max_attempts
+    ? finish(job, startedAt, 'failed', { kind: 'permanent', response, suppressRecipient: false })
+    : finish(job, startedAt, 'deferred', { kind: 'temporary', response }, { retryInMs: retryDelayMs(job.attempts) });
+}
+
 async function processJob(job: Job) {
   const startedAt = new Date();
 
   // The recipient may have been suppressed after the message was queued.
   const suppressionReason = await findSuppression(pool, job.tenant_id, job.to_addr, job.topic);
   if (suppressionReason) {
-    return finish(job, startedAt, 'suppressed', { kind: 'sent', response: `recipient suppressed: ${suppressionReason}` });
+    return finish(job, startedAt, 'suppressed', { kind: 'accepted', response: `recipient suppressed: ${suppressionReason}` });
   }
 
   const template = templates.get(job.template_id);
@@ -131,49 +161,27 @@ async function processJob(job: Job) {
     });
   }
 
-  // An app pointed at a route that isn't configured is our config mistake, not the message's:
-  // defer so it goes out once the route is fixed (or fails after max attempts, visibly).
   const route = routes.get(job.route);
-  if (!route) {
-    const response = `SMTP route "${job.route}" is not configured`;
-    console.error(`message ${job.id}: ${response}`);
-    return job.attempts >= job.max_attempts
-      ? finish(job, startedAt, 'failed', { kind: 'permanent', response, suppressRecipient: false })
-      : finish(job, startedAt, 'deferred', { kind: 'temporary', response }, { retryInMs: retryDelayMs(job.attempts) });
-  }
+  if (!route) return configProblem(job, startedAt, `SMTP route "${job.route}" is not configured`);
+
+  const composed = composeMail(job, route, template, {
+    publicBaseUrl: config.PUBLIC_BASE_URL,
+    unsubscribeSecret: config.UNSUBSCRIBE_SECRET,
+    bounceSecret: config.BOUNCE_SECRET,
+    dkim: dkimKeyFor(job.from_addr.split('@')[1]!, config.DKIM_KEYS_DIR),
+  });
+  if (!composed.ok) return configProblem(job, startedAt, composed.error);
 
   try {
-    const headers: Record<string, string> = { 'X-Eclipse-Message-Id': job.id };
-    let variables = job.variables;
-    if (job.category === 'marketing' && job.topic) {
-      const token = signUnsubscribe(
-        { tenantId: job.tenant_id, email: job.to_addr, topic: job.topic },
-        config.UNSUBSCRIBE_SECRET,
-      );
-      const unsubscribeUrl = `${config.PUBLIC_BASE_URL.replace(/\/$/, '')}/u/${token}`;
-      variables = { ...variables, [UNSUBSCRIBE_VAR]: unsubscribeUrl };
-      // RFC 8058 one-click unsubscribe, required by Gmail and Yahoo for bulk senders.
-      headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
-      headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
-    }
-    if (route.sesConfigurationSet) {
-      // SES strips these before delivery. The tag lets /webhooks/ses match events to this message.
-      headers['X-SES-CONFIGURATION-SET'] = route.sesConfigurationSet;
-      headers['X-SES-MESSAGE-TAGS'] = `eclipse_id=${job.id}`;
-    }
-    const content = render(template, variables);
-    const domain = job.from_addr.split('@')[1];
-    const info = await route.transport.sendMail({
-      from: job.from_addr,
-      to: job.to_addr,
-      ...content,
-      messageId: `<${job.id}@${domain}>`,
-      headers,
-    });
-    await finish(job, startedAt, 'sent', { kind: 'sent', code: 250, response: String(info.response ?? '') }, {
-      providerMessageId: providerMessageId(info.response) ?? info.messageId,
-    });
-    console.log(`message ${job.id}: sent via ${job.route} (attempt ${job.attempts})`);
+    const info = await route.transport.sendMail(composed.mail);
+    await finish(
+      job,
+      startedAt,
+      'accepted_local',
+      { kind: 'accepted', code: 250, response: String(info.response ?? '') },
+      { nextHopId: nextHopMessageId(info.response) ?? info.messageId },
+    );
+    console.log(`message ${job.id}: accepted by ${job.route} (attempt ${job.attempts})`);
   } catch (err) {
     const outcome = classifySmtpError(err);
     if (outcome.kind === 'permanent' || job.attempts >= job.max_attempts) {
@@ -187,19 +195,13 @@ async function processJob(job: Job) {
   }
 }
 
-// SES answers "250 Ok <ses-message-id>"; its events refer to the message by that id.
-function providerMessageId(response: unknown): string | undefined {
-  return /^250 Ok (S+)/i.exec(String(response ?? ''))?.[1];
-}
-
 async function housekeeping() {
   await pool.query(`DELETE FROM rate_counters WHERE window_start < now() - interval '1 day'`);
 }
 
 async function main() {
-  console.log(
-    `worker started (concurrency ${config.WORKER_CONCURRENCY}, routes: ${[...routes.keys()].join(', ')}, default: ${defaultRoute})`,
-  );
+  const summary = [...routes.values()].map((r) => `${r.name}(${r.kind})`).join(', ');
+  console.log(`worker started (concurrency ${config.WORKER_CONCURRENCY}, routes: ${summary}, default: ${defaultRoute})`);
   let lastHousekeeping = 0;
   while (running) {
     try {

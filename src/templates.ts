@@ -87,5 +87,7 @@ export function validateVariables(t: Template, vars: Record<string, unknown>): s
 export function render(t: Template, vars: Record<string, unknown>) {
   // strict mode throws on missing optionals, so default them to empty.
   const data = { ...Object.fromEntries(t.meta.optional.map((k) => [k, ''])), ...vars };
-  return { subject: t.subject(data), html: t.html(data), text: t.text(data) };
+  // A variable containing CR/LF must not be able to start a new header line via the subject.
+  const subject = t.subject(data).replace(/[\r\n]+/g, ' ').trim().slice(0, 998);
+  return { subject, html: t.html(data), text: t.text(data) };
 }

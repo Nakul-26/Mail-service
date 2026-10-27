@@ -126,7 +126,7 @@ app.get<{ Params: { id: string } }>('/v1/emails/:id', async (req, reply) => {
   }
   const { rows } = await pool.query(
     `SELECT id, template_id, to_addr, from_addr, status, attempts, last_error, last_smtp_code,
-            provider_message_id, route, created_at, updated_at, sent_at, delivered_at, next_attempt_at
+            provider_message_id, route, created_at, updated_at, sent_at, accepted_remote_at, delivered_at, next_attempt_at
        FROM messages WHERE id = $1 AND app_id = $2`,
     [req.params.id, req.caller.appId],
   );
@@ -154,7 +154,8 @@ app.get<{ Params: { id: string } }>('/v1/emails/:id', async (req, reply) => {
     route: m.route,
     createdAt: m.created_at,
     updatedAt: m.updated_at,
-    sentAt: m.sent_at,
+    acceptedLocalAt: m.sent_at,
+    acceptedRemoteAt: m.accepted_remote_at,
     deliveredAt: m.delivered_at,
     nextAttemptAt: m.status === 'deferred' ? m.next_attempt_at : null,
     history: attempts.rows,
