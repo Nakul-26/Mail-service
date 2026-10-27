@@ -70,6 +70,10 @@ parameters). Worth removing before sharing it.
 - [x] **M1.6 – Per-app sending routes**: named SMTP routes (`SMTP_ROUTES`), `apps.route`,
       `npm run set-route`, route recorded per attempt. Lets demo exams trial the self-hosted
       server while production apps stay on SES (already in use).
+- [x] **M1.7 – Recipient allowlist**: `apps.allowed_recipients` (addresses or `@domain`),
+      `npm run set-recipients`; keeps demo trials away from real users.
+- [ ] **Next, in order**: SES event webhook (M3) → batches (M4) → self-hosted Postfix + DKIM
+      as the `selfhosted` route → production deploy (Dockerfile, backups, metrics; M5).
 - [ ] **M2 – Real relay + DNS**: pick relay (e.g. SES, Postmark, Brevo,
       Mailgun), configure `notify.<domain>` SPF/DKIM/DMARC(p=none), verify
       SPF/DKIM/DMARC pass in Gmail/Outlook headers.

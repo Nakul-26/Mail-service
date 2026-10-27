@@ -40,7 +40,14 @@ npm run create-app -- "Demo College" demo-exams exam exams@notify.example.com
 npm run set-route -- "Demo College" demo-exams selfhosted   # "default" switches it back
 ```
 
-The change applies to the next send attempt, including queued messages. Every attempt records its
+For a demo trial, also lock the app to your demo mailboxes, so it cannot reach a real student even by
+mistake (other recipients get `403 recipient_not_allowed`):
+
+```sh
+npm run set-recipients -- "Demo College" demo-exams demo1@gmail.com @demo.yourdomain.com   # "any" lifts it
+```
+
+A route change applies to the next send attempt, including queued messages. Every attempt records its
 route, so routes can be compared:
 
 ```sql

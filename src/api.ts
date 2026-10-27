@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticate, type AppContext } from './auth.js';
 import { config } from './config.js';
 import { pool } from './db.js';
+import { isRecipientAllowed } from './recipients.js';
 import { findSuppression } from './suppressions.js';
 import { templates, validateVariables } from './templates.js';
 import { verifyUnsubscribe } from './unsubscribe.js';
@@ -61,6 +62,10 @@ app.post('/v1/emails', async (req, reply) => {
   const from = (body.from ?? ctx.defaultFrom).toLowerCase();
   if (!ctx.allowedSenders.map((s) => s.toLowerCase()).includes(from)) {
     return reply.code(403).send({ error: 'sender_not_allowed', from });
+  }
+
+  if (!isRecipientAllowed(body.to, ctx.allowedRecipients)) {
+    return reply.code(403).send({ error: 'recipient_not_allowed', to: body.to });
   }
 
   const problems = validateVariables(template, body.variables);

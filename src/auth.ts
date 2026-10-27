@@ -20,6 +20,7 @@ export interface AppContext {
   product: string;
   defaultFrom: string;
   allowedSenders: string[];
+  allowedRecipients: string[] | null;
   ratePerMinute: number;
   dailyQuota: number;
 }
@@ -31,7 +32,7 @@ export async function authenticate(header: string | undefined): Promise<AppConte
 
   const { rows } = await pool.query(
     `SELECT k.id AS key_id, k.key_hash, a.id AS app_id, a.tenant_id, a.product, a.default_from,
-            a.allowed_senders, a.rate_per_minute, a.daily_quota
+            a.allowed_senders, a.allowed_recipients, a.rate_per_minute, a.daily_quota
        FROM api_keys k JOIN apps a ON a.id = k.app_id
       WHERE k.prefix = $1 AND k.revoked_at IS NULL AND a.disabled_at IS NULL`,
     [match[1]],
@@ -49,6 +50,7 @@ export async function authenticate(header: string | undefined): Promise<AppConte
     product: row.product,
     defaultFrom: row.default_from,
     allowedSenders: row.allowed_senders,
+    allowedRecipients: row.allowed_recipients,
     ratePerMinute: row.rate_per_minute,
     dailyQuota: row.daily_quota,
   };
