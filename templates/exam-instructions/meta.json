@@ -1,0 +1,7 @@
+{
+  "description": "Instructions sent to a candidate before an exam",
+  "products": ["exam"],
+  "priority": 1,
+  "required": ["name", "examName", "startsAt", "examUrl"],
+  "optional": ["notes"]
+}

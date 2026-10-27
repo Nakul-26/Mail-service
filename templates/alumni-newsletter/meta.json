@@ -1,0 +1,9 @@
+{
+  "description": "Alumni newsletter: a headline, a message and an optional call to action",
+  "products": ["alumni"],
+  "category": "marketing",
+  "topic": "alumni-newsletter",
+  "priority": 2,
+  "required": ["name", "title", "message"],
+  "optional": ["ctaUrl", "ctaText"]
+}

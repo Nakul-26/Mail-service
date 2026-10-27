@@ -1,0 +1,7 @@
+{
+  "description": "One-time passcode for exam login",
+  "products": ["exam"],
+  "priority": 0,
+  "required": ["name", "otp", "expiresInMinutes"],
+  "sensitive": ["otp"]
+}
