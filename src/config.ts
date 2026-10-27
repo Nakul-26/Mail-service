@@ -11,6 +11,11 @@ const schema = z.object({
   UNSUBSCRIBE_SECRET: z.string().min(32, 'UNSUBSCRIBE_SECRET must be at least 32 characters'),
   // SMTP routes are configured in smtp.ts. Apps without their own route use this one.
   DEFAULT_ROUTE: z.string().optional(),
+  // SNS topic(s) SES publishes delivery events to; /webhooks/ses rejects anything else. Empty = webhook off.
+  SES_SNS_TOPIC_ARNS: z
+    .string()
+    .default('')
+    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean)),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).default(5),
   WORKER_POLL_MS: z.coerce.number().int().min(100).default(1000),
   MAX_ATTEMPTS: z.coerce.number().int().min(1).default(8),

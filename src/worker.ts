@@ -133,8 +133,8 @@ async function processJob(job: Job) {
 
   // An app pointed at a route that isn't configured is our config mistake, not the message's:
   // defer so it goes out once the route is fixed (or fails after max attempts, visibly).
-  const transport = routes.get(job.route);
-  if (!transport) {
+  const route = routes.get(job.route);
+  if (!route) {
     const response = `SMTP route "${job.route}" is not configured`;
     console.error(`message ${job.id}: ${response}`);
     return job.attempts >= job.max_attempts
@@ -156,9 +156,14 @@ async function processJob(job: Job) {
       headers['List-Unsubscribe'] = `<${unsubscribeUrl}>`;
       headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
     }
+    if (route.sesConfigurationSet) {
+      // SES strips these before delivery. The tag lets /webhooks/ses match events to this message.
+      headers['X-SES-CONFIGURATION-SET'] = route.sesConfigurationSet;
+      headers['X-SES-MESSAGE-TAGS'] = `eclipse_id=${job.id}`;
+    }
     const content = render(template, variables);
     const domain = job.from_addr.split('@')[1];
-    const info = await transport.sendMail({
+    const info = await route.transport.sendMail({
       from: job.from_addr,
       to: job.to_addr,
       ...content,
@@ -166,7 +171,7 @@ async function processJob(job: Job) {
       headers,
     });
     await finish(job, startedAt, 'sent', { kind: 'sent', code: 250, response: String(info.response ?? '') }, {
-      providerMessageId: info.messageId,
+      providerMessageId: providerMessageId(info.response) ?? info.messageId,
     });
     console.log(`message ${job.id}: sent via ${job.route} (attempt ${job.attempts})`);
   } catch (err) {
@@ -180,6 +185,11 @@ async function processJob(job: Job) {
       console.warn(`message ${job.id}: deferred ${Math.round(retryInMs / 1000)}s: ${outcome.response}`);
     }
   }
+}
+
+// SES answers "250 Ok <ses-message-id>"; its events refer to the message by that id.
+function providerMessageId(response: unknown): string | undefined {
+  return /^250 Ok (S+)/i.exec(String(response ?? ''))?.[1];
 }
 
 async function housekeeping() {

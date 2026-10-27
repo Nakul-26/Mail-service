@@ -4,6 +4,8 @@ import { authenticate, type AppContext } from './auth.js';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { isRecipientAllowed } from './recipients.js';
+import { applySesEvent, type SesEvent } from './ses-events.js';
+import { isSnsUrl, verifySnsMessage } from './sns.js';
 import { findSuppression } from './suppressions.js';
 import { templates, validateVariables } from './templates.js';
 import { verifyUnsubscribe } from './unsubscribe.js';
@@ -124,7 +126,7 @@ app.get<{ Params: { id: string } }>('/v1/emails/:id', async (req, reply) => {
   }
   const { rows } = await pool.query(
     `SELECT id, template_id, to_addr, from_addr, status, attempts, last_error, last_smtp_code,
-            provider_message_id, route, created_at, updated_at, sent_at, next_attempt_at
+            provider_message_id, route, created_at, updated_at, sent_at, delivered_at, next_attempt_at
        FROM messages WHERE id = $1 AND app_id = $2`,
     [req.params.id, req.caller.appId],
   );
@@ -133,6 +135,10 @@ app.get<{ Params: { id: string } }>('/v1/emails/:id', async (req, reply) => {
   const attempts = await pool.query(
     `SELECT attempt, route, outcome, smtp_code, smtp_response, started_at, finished_at
        FROM delivery_attempts WHERE message_id = $1 ORDER BY attempt`,
+    [m.id],
+  );
+  const events = await pool.query(
+    `SELECT event_type AS type, occurred_at, detail FROM message_events WHERE message_id = $1 ORDER BY id`,
     [m.id],
   );
   return {
@@ -149,8 +155,10 @@ app.get<{ Params: { id: string } }>('/v1/emails/:id', async (req, reply) => {
     createdAt: m.created_at,
     updatedAt: m.updated_at,
     sentAt: m.sent_at,
+    deliveredAt: m.delivered_at,
     nextAttemptAt: m.status === 'deferred' ? m.next_attempt_at : null,
     history: attempts.rows,
+    events: events.rows,
   };
 });
 
@@ -165,6 +173,42 @@ app.get('/v1/templates', async (req) => {
       required: t.meta.required,
       optional: t.meta.optional,
     }));
+});
+
+// SES delivery events, delivered by SNS. Authenticated by SNS's signature, not an API key.
+// SNS retries on non-2xx, so only return an error when we want the notification again.
+app.post('/webhooks/ses', async (req, reply) => {
+  if (config.SES_SNS_TOPIC_ARNS.length === 0) return reply.code(404).send({ error: 'not_found' });
+  let msg;
+  try {
+    const body = typeof req.body === 'string' ? JSON.parse(req.body) : req.body;
+    msg = await verifySnsMessage(body, config.SES_SNS_TOPIC_ARNS);
+  } catch (err) {
+    req.log.warn({ err: (err as Error).message }, 'rejected SNS message');
+    return reply.code(403).send({ error: 'invalid_sns_message' });
+  }
+
+  if (msg.Type === 'SubscriptionConfirmation') {
+    if (!isSnsUrl(msg.SubscribeURL)) return reply.code(403).send({ error: 'untrusted_subscribe_url' });
+    const res = await fetch(msg.SubscribeURL!, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+    req.log.info({ topic: msg.TopicArn, status: res.status }, 'confirmed SNS subscription');
+    return reply.code(res.ok ? 200 : 502).send();
+  }
+  if (msg.Type === 'UnsubscribeConfirmation') {
+    req.log.warn({ topic: msg.TopicArn }, 'SNS subscription removed; SES events will stop arriving');
+    return reply.code(200).send();
+  }
+
+  let event: SesEvent;
+  try {
+    event = JSON.parse(msg.Message);
+  } catch {
+    req.log.warn({ snsMessageId: msg.MessageId }, 'SNS notification is not an SES event');
+    return reply.code(200).send();
+  }
+  const result = await applySesEvent(msg.MessageId, event);
+  req.log.info({ snsMessageId: msg.MessageId, type: event.eventType ?? event.notificationType, result }, 'SES event');
+  return reply.code(200).send();
 });
 
 // Public unsubscribe endpoints (no API key; the signed token is the credential).

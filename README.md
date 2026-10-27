@@ -54,6 +54,13 @@ route, so routes can be compared:
 SELECT route, outcome, count(*) FROM delivery_attempts GROUP BY 1, 2 ORDER BY 1, 2;
 ```
 
+## Delivery events (SES)
+
+With `SES_SNS_TOPIC_ARNS` and `SMTP_<ROUTE>_SES_CONFIGURATION_SET` set, SES reports what happened after it
+accepted each message, via SNS to `POST /webhooks/ses`. Messages move on to `delivered` or `bounced`,
+hard bounces and complaints are suppressed, and `GET /v1/emails/:id` lists the events. One-time AWS
+setup: [docs/ses-events-setup.md](docs/ses-events-setup.md).
+
 ## Message lifecycle
 
 `queued → sending → sent` (accepted by relay), or `deferred` (temporary failure, retried with

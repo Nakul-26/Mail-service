@@ -72,7 +72,11 @@ parameters). Worth removing before sharing it.
       server while production apps stay on SES (already in use).
 - [x] **M1.7 – Recipient allowlist**: `apps.allowed_recipients` (addresses or `@domain`),
       `npm run set-recipients`; keeps demo trials away from real users.
-- [ ] **Next, in order**: SES event webhook (M3) → batches (M4) → self-hosted Postfix + DKIM
+- [x] **M3a – SES delivery events**: `POST /webhooks/ses` (SNS signature + topic check, auto-confirm),
+      delivered / bounced / complaint handling with suppression, `events` in the status API,
+      SES configuration set + message tag per route. Setup for the SES account owner:
+      `docs/ses-events-setup.md`. Still open in M3: unsubscribe is done; self-hosted bounces come with Postfix.
+- [ ] **Next, in order**: batches (M4) → self-hosted Postfix + DKIM
       as the `selfhosted` route → production deploy (Dockerfile, backups, metrics; M5).
 - [ ] **M2 – Real relay + DNS**: pick relay (e.g. SES, Postmark, Brevo,
       Mailgun), configure `notify.<domain>` SPF/DKIM/DMARC(p=none), verify

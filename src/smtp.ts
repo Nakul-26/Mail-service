@@ -17,9 +17,17 @@ const routeSchema = z.object({
   PASS: z.string().optional(),
   // Stay under the route's sending limit (e.g. SES starts at 14/s). 0 = unlimited.
   RATE_PER_SECOND: z.coerce.number().int().min(0).default(0),
+  // SES only: messages carry this configuration set, so SES publishes their delivery events
+  // (via SNS to /webhooks/ses) without changing anything else on the SES account.
+  SES_CONFIGURATION_SET: z.string().regex(/^[A-Za-z0-9_-]+$/).optional(),
 });
 
-function readRoute(prefix: string) {
+export interface Route {
+  transport: Transporter;
+  sesConfigurationSet?: string;
+}
+
+function readRoute(prefix: string): Route {
   const fields = Object.keys(routeSchema.shape).map((k) => [k, process.env[`${prefix}${k}`] || undefined]);
   const parsed = routeSchema.safeParse(Object.fromEntries(fields));
   if (!parsed.success) {
@@ -27,7 +35,7 @@ function readRoute(prefix: string) {
     throw new Error(`invalid SMTP route config: ${problems.join('; ')}`);
   }
   const r = parsed.data;
-  return nodemailer.createTransport({
+  const transport = nodemailer.createTransport({
     host: r.HOST,
     port: r.PORT,
     secure: r.SECURE,
@@ -41,12 +49,13 @@ function readRoute(prefix: string) {
     greetingTimeout: 30_000,
     socketTimeout: 60_000,
   });
+  return { transport, sesConfigurationSet: r.SES_CONFIGURATION_SET };
 }
 
-function loadRoutes(): Map<string, Transporter> {
+function loadRoutes(): Map<string, Route> {
   const names = (process.env.SMTP_ROUTES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
   if (names.length === 0) return new Map([['default', readRoute('SMTP_')]]);
-  const routes = new Map<string, Transporter>();
+  const routes = new Map<string, Route>();
   for (const name of names) {
     if (!/^[a-z0-9]+$/.test(name)) throw new Error(`SMTP route name "${name}" must be lowercase letters/digits`);
     routes.set(name, readRoute(`SMTP_${name.toUpperCase()}_`));
@@ -62,5 +71,5 @@ if (!routes.has(defaultRoute)) {
 }
 
 export function closeRoutes() {
-  for (const t of routes.values()) t.close();
+  for (const r of routes.values()) r.transport.close();
 }
