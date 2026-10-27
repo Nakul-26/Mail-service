@@ -2,6 +2,7 @@
 // Creates the tenant if needed, the app, and one API key. The key is printed once and never stored.
 import { generateApiKey } from '../src/auth.js';
 import { audit } from '../src/audit.js';
+import { config } from '../src/config.js';
 import { pool } from '../src/db.js';
 
 const [tenantName, appName, product, from, ...extraSenders] = process.argv.slice(2);
@@ -35,7 +36,7 @@ try {
   const domains = [...new Set(senders.map((s) => s.split('@')[1]))];
   const verified = await pool.query('SELECT domain FROM sender_domains WHERE domain = ANY($1) AND verified_at IS NOT NULL', [domains]);
   const missing = domains.filter((d) => !verified.rows.some((r) => r.domain === d));
-  if (missing.length) console.warn(`warning: sender domain(s) not verified yet: ${missing.join(', ')}. Sends will be refused until: npm run domain -- add/verify`);
+  if (missing.length && !config.ALLOW_UNVERIFIED_SENDER_DOMAINS) console.warn(`warning: sender domain(s) not verified yet: ${missing.join(', ')}. Sends will be refused until: npm run domain -- add/verify`);
   console.log(`app ${appName} (${app.rows[0].id}) created for tenant ${tenantName}`);
   console.log(`API key (shown once, store it securely):\n${key}`);
 } catch (err) {

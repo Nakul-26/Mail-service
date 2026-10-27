@@ -63,6 +63,8 @@ describe('Postfix log tracker', () => {
         line('QDEF000001', `message-id=<${deferred.id}@notify.test.example>`) +
         line('QOK0000001', `to=<${ok.to}>, relay=mx.gmail.test[1.2.3.4]:25, delay=1, dsn=2.0.0, status=sent (250 2.0.0 OK)`) +
         line('QBAD000001', `to=<${bad.to}>, relay=mx.gmail.test[1.2.3.4]:25, delay=1, dsn=5.1.1, status=bounced (550 5.1.1 no such user (in reply to RCPT TO command))`) +
+        // Postfix's own bounce notice (not one of our messages): must be ignored, not kept as pending.
+        line('QNDR000001', 'to=<bounce+abc@bounces.test.example>, relay=tracker[172.30.0.5]:2525, delay=0.1, dsn=2.0.0, status=sent (250 OK)') +
         // a partly written line must not be consumed yet
         `Oct 27 10:00:01 mail postfix/smtp[1]: QDEF000001: to=<${deferred.to}>, relay=none, delay=30, dsn=4.4.1, status=defer`,
     );
@@ -71,6 +73,8 @@ describe('Postfix log tracker', () => {
     expect(await status(ok.id)).toBe('accepted_remote');
     expect(await status(bad.id)).toBe('bounced');
     expect(await status(deferred.id)).toBe('accepted_local');
+    const ndr = await pool.query(`SELECT count(*)::int AS n FROM mta_log_events WHERE queue_id = 'QNDR000001'`);
+    expect(ndr.rows[0].n).toBe(0);
     const supp = await pool.query('SELECT reason FROM suppressions WHERE tenant_id = $1 AND email = $2', [app.tenantId, bad.to]);
     expect(supp.rows[0]?.reason).toBe('hard_bounce');
 

@@ -91,8 +91,12 @@ async function verify(domain: string) {
 
   const dkimTxt = await txt(`${selector}._domainkey.${domain}`);
   const spf = (await txt(domain)).filter((t) => t.toLowerCase().startsWith('v=spf1'));
-  let dmarc = await txt(`_dmarc.${domain}`);
-  if (!dmarc.some((t) => t.startsWith('v=DMARC1'))) dmarc = await txt(`_dmarc.${domain.split('.').slice(-2).join('.')}`);
+  // DMARC applies from the domain itself or a parent (the organizational domain, e.g. college.ac.in).
+  let dmarc: string[] = [];
+  const labels = domain.split('.');
+  for (let i = 0; i < labels.length - 1 && !dmarc.some((t) => t.startsWith('v=DMARC1')); i++) {
+    dmarc = await txt(`_dmarc.${labels.slice(i).join('.')}`);
+  }
 
   const checks = {
     dkim: dkimTxt.some((t) => t.replace(/\s+/g, '').includes(`p=${pub}`)),

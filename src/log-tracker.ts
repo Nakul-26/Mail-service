@@ -98,8 +98,12 @@ async function readFrom(file: string, fileId: string, offset: number, size: numb
           [ev.queueId, ev.messageId],
         );
       } else {
+        // Only lines about our messages. Postfix logs its "cleanup: message-id" line before any
+        // delivery line, so the mapping exists by now; other mail (e.g. Postfix's own bounce notices
+        // to the bounce receiver) is skipped instead of piling up as orphans.
         await client.query(
-          `INSERT INTO mta_log_events (source_key, queue_id, event) VALUES ($1, $2, $3)
+          `INSERT INTO mta_log_events (source_key, queue_id, event)
+           SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM mta_queue_map WHERE queue_id = $2)
            ON CONFLICT (source_key) DO NOTHING`,
           [`${fileId}@${lineOffset}`, ev.queueId, JSON.stringify(ev)],
         );
