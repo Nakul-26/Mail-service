@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { pool } from './db.js';
 import { classifySmtpError, retryDelayMs, type Outcome } from './delivery.js';
 import { dkimKeyFor } from './dkim.js';
+import { heartbeat } from './monitor.js';
 import { closeRoutes, defaultRoute, nextHopMessageId, routes } from './smtp.js';
 import { findSuppression } from './suppressions.js';
 import { templates } from './templates.js';
@@ -203,8 +204,13 @@ async function main() {
   const summary = [...routes.values()].map((r) => `${r.name}(${r.kind})`).join(', ');
   console.log(`worker started (concurrency ${config.WORKER_CONCURRENCY}, routes: ${summary}, default: ${defaultRoute})`);
   let lastHousekeeping = 0;
+  let lastBeat = 0;
   while (running) {
     try {
+      if (Date.now() - lastBeat > 10_000) {
+        await heartbeat('worker', { routes: [...routes.keys()] });
+        lastBeat = Date.now();
+      }
       if (Date.now() - lastHousekeeping > 10 * 60_000) {
         await housekeeping();
         lastHousekeeping = Date.now();

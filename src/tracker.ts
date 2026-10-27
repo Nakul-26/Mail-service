@@ -3,6 +3,7 @@ import { createBounceReceiver } from './bounce-receiver.js';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { applyPending, ingest } from './log-tracker.js';
+import { heartbeat, runChecks, sendAlerts } from './monitor.js';
 
 // Delivery tracking for the self-hosted route: follows Postfix's log and receives bounce mail.
 // Runs as its own process (`npm run start:tracker`), next to the API and the worker.
@@ -10,8 +11,18 @@ import { applyPending, ingest } from './log-tracker.js';
 let running = true;
 
 async function followLog() {
+  let lastBeat = 0;
+  let lastCheck = 0;
   while (running) {
     try {
+      if (Date.now() - lastBeat > 10_000) {
+        await heartbeat('tracker');
+        lastBeat = Date.now();
+      }
+      if (Date.now() - lastCheck > 60_000) {
+        lastCheck = Date.now();
+        await sendAlerts(await runChecks());
+      }
       const lines = await ingest(config.POSTFIX_LOG_FILE);
       const applied = await applyPending();
       if (Object.keys(applied).length) console.log('tracker:', JSON.stringify(applied));

@@ -1,8 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pool } from './db.js';
+import { projectPath } from './paths.js';
 
-const dir = join(import.meta.dirname, '..', 'migrations');
+const dir = projectPath('migrations');
 
 const client = await pool.connect();
 try {

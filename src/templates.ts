@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import Handlebars from 'handlebars';
 import { z } from 'zod';
+import { projectPath } from './paths.js';
 
 /** Filled in by the worker for marketing mail; callers may not supply it. */
 export const UNSUBSCRIBE_VAR = 'unsubscribeUrl';
@@ -39,7 +40,7 @@ export interface Template {
   text: Handlebars.TemplateDelegate;
 }
 
-const dir = join(import.meta.dirname, '..', 'templates');
+const dir = process.env.TEMPLATES_DIR ?? projectPath('templates');
 
 function load(): Map<string, Template> {
   const templates = new Map<string, Template>();

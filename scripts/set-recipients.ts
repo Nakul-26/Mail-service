@@ -1,6 +1,7 @@
 // Usage: npm run set-recipients -- <tenant> <app-name> <entry...>|any
 // Restricts who an app may email: exact addresses or "@domain" entries. "any" removes the restriction.
 // Example: npm run set-recipients -- "Demo College" demo-exams demo1@gmail.com @demo.example.com
+import { audit } from '../src/audit.js';
 import { pool } from '../src/db.js';
 
 const [tenantName, appName, ...entries] = process.argv.slice(2);
@@ -18,6 +19,7 @@ try {
     [tenantName, appName, list],
   );
   if (!rowCount) throw new Error(`no app "${appName}" in tenant "${tenantName}"`);
+  await audit(pool, 'app.set_recipients', `${tenantName}/${appName}`, { allowedRecipients: list });
   console.log(`${tenantName}/${appName} may email: ${list ? list.join(', ') : 'anyone'}`);
 } catch (err) {
   console.error((err as Error).message);

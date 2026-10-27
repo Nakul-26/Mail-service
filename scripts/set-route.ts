@@ -1,6 +1,7 @@
 // Usage: npm run set-route -- <tenant> <app-name> <route|default>
 // Points an app at one of the SMTP routes in SMTP_ROUTES. "default" clears it back to DEFAULT_ROUTE.
 // Takes effect on the next send attempt, including messages already queued.
+import { audit } from '../src/audit.js';
 import { pool } from '../src/db.js';
 import { closeRoutes, defaultRoute, routes } from '../src/smtp.js';
 
@@ -18,6 +19,7 @@ try {
     [tenantName, appName, route === 'default' ? null : route],
   );
   if (!rowCount) throw new Error(`no app "${appName}" in tenant "${tenantName}"`);
+  await audit(pool, 'app.set_route', `${tenantName}/${appName}`, { route });
   console.log(`${tenantName}/${appName} now sends via ${route === 'default' ? `${defaultRoute} (default)` : route}`);
 } catch (err) {
   console.error((err as Error).message);

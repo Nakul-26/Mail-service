@@ -23,6 +23,8 @@ export interface AppContext {
   allowedRecipients: string[] | null;
   ratePerMinute: number;
   dailyQuota: number;
+  maxBatchSize: number;
+  appName: string;
 }
 
 export async function authenticate(header: string | undefined): Promise<AppContext | null> {
@@ -32,7 +34,7 @@ export async function authenticate(header: string | undefined): Promise<AppConte
 
   const { rows } = await pool.query(
     `SELECT k.id AS key_id, k.key_hash, a.id AS app_id, a.tenant_id, a.product, a.default_from,
-            a.allowed_senders, a.allowed_recipients, a.rate_per_minute, a.daily_quota
+            a.allowed_senders, a.allowed_recipients, a.rate_per_minute, a.daily_quota, a.max_batch_size, a.name AS app_name
        FROM api_keys k JOIN apps a ON a.id = k.app_id
       WHERE k.prefix = $1 AND k.revoked_at IS NULL AND a.disabled_at IS NULL`,
     [match[1]],
@@ -53,5 +55,7 @@ export async function authenticate(header: string | undefined): Promise<AppConte
     allowedRecipients: row.allowed_recipients,
     ratePerMinute: row.rate_per_minute,
     dailyQuota: row.daily_quota,
+    maxBatchSize: row.max_batch_size,
+    appName: row.app_name,
   };
 }

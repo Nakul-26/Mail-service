@@ -14,7 +14,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "set-route": "tsx scripts/set-route.ts",
-    "set-recipients": "tsx scripts/set-recipients.ts"
+    "set-recipients": "tsx scripts/set-recipients.ts",
+    "dev:tracker": "tsx watch src/tracker.ts",
+    "start:tracker": "node dist/src/tracker.js",
+    "domain": "tsx scripts/domain.ts",
+    "keys": "tsx scripts/keys.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.9",

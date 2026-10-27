@@ -1,4 +1,5 @@
-import { open, stat } from 'node:fs/promises';
+import { open, readdir, stat } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
 import { pool } from './db.js';
 import { classifyPermanentFailure, recordEvent, type DeliveryEvent } from './events.js';
 import { parsePostfixLine, type PostfixLogEvent } from './postfix-log.js';
@@ -23,16 +24,50 @@ export async function ingest(file: string): Promise<number> {
   }
   const fileId = `${info.dev}:${info.ino}`;
   const saved = await pool.query('SELECT file_id, file_offset FROM tracker_state WHERE name = $1', [STATE]);
+  const prev = saved.rows[0];
+  if (prev && prev.file_id !== fileId) {
+    // The log was rotated (postfix logrotate renames it). Finish the old file first, so lines
+    // written just before the rotation are not lost.
+    const old = await findByFileId(file, prev.file_id);
+    if (old && Number(prev.file_offset) < old.size) {
+      return readFrom(old.path, prev.file_id, Number(prev.file_offset), old.size);
+    }
+  }
   let offset = 0;
-  if (saved.rows[0]?.file_id === fileId && Number(saved.rows[0].file_offset) <= info.size) {
-    offset = Number(saved.rows[0].file_offset);
-  } // else: new or rotated file, start at its beginning
-  if (offset >= info.size) return 0;
+  if (prev?.file_id === fileId && Number(prev.file_offset) <= info.size) {
+    offset = Number(prev.file_offset);
+  } // else: new file (or truncated), start at its beginning
+  if (offset >= info.size) {
+    if (prev?.file_id !== fileId) await saveOffset(fileId, offset);
+    return 0;
+  }
+  return readFrom(file, fileId, offset, info.size);
+}
+
+async function findByFileId(file: string, fileId: string) {
+  const dir = dirname(file);
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (!name.startsWith(basename(file))) continue;
+    const s = await stat(join(dir, name)).catch(() => null);
+    if (s && `${s.dev}:${s.ino}` === fileId) return { path: join(dir, name), size: s.size };
+  }
+  return null;
+}
+
+async function saveOffset(fileId: string, offset: number) {
+  await pool.query(
+    `INSERT INTO tracker_state (name, file_id, file_offset) VALUES ($1, $2, $3)
+     ON CONFLICT (name) DO UPDATE SET file_id = $2, file_offset = $3, updated_at = now()`,
+    [STATE, fileId, offset],
+  );
+}
+
+async function readFrom(file: string, fileId: string, offset: number, size: number): Promise<number> {
 
   const fh = await open(file, 'r');
   let chunk: Buffer;
   try {
-    const length = Math.min(info.size - offset, MAX_READ);
+    const length = Math.min(size - offset, MAX_READ);
     chunk = Buffer.alloc(length);
     await fh.read(chunk, 0, length, offset);
   } finally {
