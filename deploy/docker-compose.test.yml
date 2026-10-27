@@ -1,0 +1,20 @@
+# TEST ONLY overlay: runs the real stack (API, worker, tracker, Postfix with DKIM/VERP) but makes
+# Postfix relay everything to fake-mx instead of real recipients' servers. Nothing leaves the machine.
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml --env-file .env.e2e up -d --build
+# Used by deploy/e2e-selfhosted.sh.
+name: eclipse-mail-e2e
+
+services:
+  postfix:
+    environment:
+      POSTFIX_TEST_RELAYHOST: "[fake-mx]:2526"
+      POSTFIX_MAX_QUEUE_LIFETIME: 1h
+
+  fake-mx:
+    image: ${APP_IMAGE:-eclipse-mail-app:latest}
+    command: ["node", "dist/scripts/dev/fake-mx.js"]
+    environment:
+      FAKE_MX_RETURN_HOST: postfix
+    networks: [internal, edge]
+    ports: ["127.0.0.1:${FAKE_MX_HTTP_PORT:-8090}:8090"]
+    depends_on: [postfix]

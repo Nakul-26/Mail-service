@@ -1,0 +1,142 @@
+# Production stack for the self-hosted mail service. See docs/deployment.md.
+#   cd deploy && cp .env.example .env && (edit) && docker compose up -d --build
+#
+# Networks:
+#   internal  no internet access: postgres, worker, tracker; postfix accepts submissions only here
+#   edge      the API, published on 127.0.0.1 only (Cloudflare Tunnel connects to it locally)
+#   egress    postfix only: outbound SMTP (port 25) to recipients' mail servers
+name: eclipse-mail
+
+x-app: &app
+  image: ${APP_IMAGE:-eclipse-mail-app:latest}
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  env_file: ${ENV_FILE:-.env}
+  environment: &app-env
+    DATABASE_URL: postgres://mail:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}@postgres:5432/mail
+    HOST: 0.0.0.0
+    SMTP_ROUTES: postfix
+    DEFAULT_ROUTE: postfix
+    SMTP_POSTFIX_KIND: postfix
+    SMTP_POSTFIX_HOST: postfix
+    SMTP_POSTFIX_PORT: "25"
+    SMTP_POSTFIX_REQUIRE_TLS: "false" # internal network only
+    SMTP_POSTFIX_VERP_DOMAIN: ${BOUNCE_DOMAIN:?set BOUNCE_DOMAIN in deploy/.env}
+    DKIM_KEYS_DIR: /secrets/dkim
+    POSTFIX_LOG_FILE: /var/log/postfix/maillog
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  security_opt: [no-new-privileges:true]
+  logging: &logging
+    driver: json-file
+    options: { max-size: 10m, max-file: "5" }
+  networks: [internal]
+
+x-heartbeat: &heartbeat
+  test: ["CMD", "node", "-e", "const t=+require('fs').readFileSync('/tmp/heartbeat','utf8');process.exit(Date.now()-t<60000?0:1)"]
+  interval: 30s
+  timeout: 5s
+  start_period: 30s
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: mail
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: mail
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [internal]
+    restart: unless-stopped
+    logging: *logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mail"]
+      interval: 5s
+      retries: 20
+
+  migrate:
+    <<: *app
+    command: ["node", "dist/src/migrate.js"]
+    restart: "no"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    command: ["node", "dist/src/api.js"]
+    networks: [internal, edge]
+    ports: ["127.0.0.1:${API_PORT:-3100}:3100"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+
+  worker:
+    <<: *app
+    command: ["node", "dist/src/worker.js"]
+    volumes: ["${SECRETS_DIR:-./secrets}/dkim:/secrets/dkim:ro"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postfix: { condition: service_healthy }
+    healthcheck: *heartbeat
+    stop_grace_period: 60s # lets in-flight SMTP hand-offs finish
+
+  tracker:
+    <<: *app
+    command: ["node", "dist/src/tracker.js"]
+    volumes: [postfix-logs:/var/log/postfix:ro]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck: *heartbeat
+
+  postfix:
+    image: ${POSTFIX_IMAGE:-eclipse-mail-postfix:latest}
+    build: ./postfix
+    hostname: ${POSTFIX_HOSTNAME:?set POSTFIX_HOSTNAME in deploy/.env}
+    environment:
+      POSTFIX_HOSTNAME: ${POSTFIX_HOSTNAME}
+      POSTFIX_MYNETWORKS: 172.30.0.0/24
+      POSTFIX_BOUNCE_DOMAINS: ${BOUNCE_DOMAIN}
+      POSTFIX_BOUNCE_TRANSPORT: smtp:[tracker]:2525
+      POSTFIX_DESTINATION_CONCURRENCY: ${POSTFIX_DESTINATION_CONCURRENCY:-5}
+      POSTFIX_DESTINATION_RATE_DELAY: ${POSTFIX_DESTINATION_RATE_DELAY:-0s}
+      POSTFIX_MAX_QUEUE_LIFETIME: ${POSTFIX_MAX_QUEUE_LIFETIME:-1d}
+      POSTFIX_INET_PROTOCOLS: ${POSTFIX_INET_PROTOCOLS:-ipv4}
+    volumes:
+      - postfix-spool:/var/spool/postfix
+      - postfix-logs:/var/log/postfix
+      - ./tls:/etc/postfix/tls:ro
+    networks: [internal, egress]
+    restart: unless-stopped
+    logging: *logging
+    stop_grace_period: 30s
+
+  # One-off admin commands: ./mailctl domain add ..., ./mailctl keys create ..., etc.
+  admin:
+    <<: *app
+    profiles: [admin]
+    restart: "no"
+    read_only: false
+    volumes: ["${SECRETS_DIR:-./secrets}/dkim:/secrets/dkim"]
+    entrypoint: ["node"]
+    command: ["--version"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+networks:
+  internal:
+    internal: true
+    ipam:
+      config: [{ subnet: 172.30.0.0/24 }]
+  edge: {}
+  egress: {}
+
+volumes:
+  pgdata:
+  postfix-spool:
+  postfix-logs:

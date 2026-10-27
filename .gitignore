@@ -2,3 +2,13 @@ node_modules/
 dist/
 .env
 test/integration/.dkim/
+secrets/
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+deploy/secrets/
+deploy/tls/*
+!deploy/tls/.gitkeep
+deploy/backups/
+deploy/.e2e-secrets/
+.tmp-*

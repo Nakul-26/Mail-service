@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.git
+deploy/secrets
+deploy/tls
+deploy/backups
+deploy/.env
+test
+*.log

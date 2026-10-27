@@ -1,0 +1,8 @@
+# Optional overlay: accept bounces from the internet on port 25 (needs an MX record for
+# BOUNCE_DOMAIN pointing at this server, and inbound port 25 open to it). Without it, bounces that
+# happen during delivery are still tracked from Postfix's log; only late bounces sent afterwards
+# by remote servers are missed. See docs/deliverability.md.
+#   docker compose -f docker-compose.yml -f docker-compose.inbound.yml up -d
+services:
+  postfix:
+    ports: ["25:25"]

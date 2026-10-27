@@ -1,0 +1,19 @@
+#!/bin/sh
+# Admin commands against the running production stack, e.g.:
+#   ./mailctl domain add notify.example.com --ip 203.0.113.10 --bounce-domain bounces.notify.example.com
+#   ./mailctl domain verify notify.example.com --ip 203.0.113.10
+#   ./mailctl create-app "Demo College" exam-portal exam exams@notify.example.com
+#   ./mailctl keys create|list "Demo College" exam-portal     ./mailctl keys revoke <prefix>
+#   ./mailctl set-route ... | set-recipients ... | migrate
+# Every change is recorded in admin_audit_log with ADMIN_ACTOR (default: your login name).
+set -eu
+cd "$(dirname "$0")"
+cmd="${1:?usage: ./mailctl <domain|keys|create-app|set-route|set-recipients|migrate> ...}"
+shift
+case "$cmd" in
+  domain|keys|create-app|set-route|set-recipients) script="dist/scripts/$cmd.js" ;;
+  migrate) script="dist/src/migrate.js" ;;
+  *) echo "unknown command: $cmd" >&2; exit 1 ;;
+esac
+exec docker compose ${COMPOSE_ARGS:-} --profile admin run --rm -T \
+  -e ADMIN_ACTOR="${ADMIN_ACTOR:-$(id -un)}" admin "$script" "$@"

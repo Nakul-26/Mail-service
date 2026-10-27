@@ -12,15 +12,10 @@ services:
       interval: 5s
       retries: 10
 
-  # Local SMTP sink for development. Replace with a real relay in production.
+  # Local SMTP sink for development (the "mailpit" relay route in .env). Production runs Postfix: deploy/.
   mailpit:
     image: axllent/mailpit
     ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
-
-  # Second sink so routing can be tested locally: stands in for the self-hosted route.
-  mailpit-selfhosted:
-    image: axllent/mailpit
-    ports: ["127.0.0.1:1026:1025", "127.0.0.1:8026:8025"]
 
 volumes:
   pgdata:
