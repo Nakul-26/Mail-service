@@ -1,87 +1,119 @@
 # Eclipse Labs Mail Service
 
-Shared transactional email service for the exam, placement and alumni platforms.
-See `plan.md` for the overall design and `IMPLEMENTATION.md` for decisions and milestones.
+Self-hosted transactional email for the exam, placement and alumni platforms: an HTTP API, a
+PostgreSQL-backed queue, a worker that DKIM-signs and hands mail to our own Postfix, and a tracker
+that turns Postfix's log and bounce messages into delivery status. **No third-party email provider,
+AWS account or webhook is needed to send or track mail.**
 
-## Local development
+- [docs/deployment.md](docs/deployment.md): deploying on the Linux server, operations, backups, rollback
+- [docs/deliverability.md](docs/deliverability.md): DNS, PTR, port 25, warm-up, bounces. Read this before sending real mail.
+- [docs/self-hosted-audit.md](docs/self-hosted-audit.md): how the SES dependency was removed
+- [plan.md](plan.md) / [IMPLEMENTATION.md](IMPLEMENTATION.md): original plan and decisions
 
-```sh
-cp .env.example .env
-docker compose up -d --wait        # Postgres :5440; Mailpit sinks for the "ses" (UI :8025) and "selfhosted" (UI :8026) routes
-npm install
-npm run migrate
-npm run create-app -- "Demo College" exam-portal exam exams@notify.example.com   # prints an API key once
-npm run dev:api                    # http://127.0.0.1:3100
-npm run dev:worker
-npm test
+## How mail flows
+
+```
+app ──HTTPS (Cloudflare Tunnel)──> api ──> postgres (message row = job)
+                                              │
+                         worker: claim (OTPs first, bulk rate-capped), render, DKIM-sign,
+                                 VERP return path ──SMTP──> postfix ──port 25──> recipient's server
+                                                              │ log file          │ late bounces / complaints
+                                                              v                   v
+                                     tracker: Postfix log → status   bounce receiver (DSN/ARF)
 ```
 
-## Sending an email
+| Status | Meaning |
+| --- | --- |
+| `queued`, `sending`, `deferred` | waiting for / being handled by our worker (`deferred` = worker retry with backoff) |
+| `accepted_local` | our Postfix (or a configured relay) accepted it |
+| `mta_deferred` | Postfix is retrying (remote server said "try later") |
+| `accepted_remote` | the recipient's mail server accepted it. **Not** proof of inbox placement. |
+| `delivered` | only with a delivery DSN (rare; Gmail/Outlook don't send them) |
+| `bounced` / `rejected` / `failed` | bad address (suppressed) / refused for policy or spam reasons / retries exhausted |
+| `suppressed` / `cancelled` | not sent: recipient suppressed / batch cancelled |
+
+Statuses only move forward; replayed or late events can't undo progress.
+
+## API
+
+All `/v1` endpoints need `Authorization: Bearer <app key>` and only ever see the calling app's data.
 
 ```sh
-curl -X POST http://127.0.0.1:3100/v1/emails \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Idempotency-Key: otp-<user>-<attempt>" \
+# one message (e.g. an OTP); repeat-safe with Idempotency-Key
+curl -X POST $API/v1/emails -H "Authorization: Bearer $KEY" -H "Idempotency-Key: otp-<user>-<n>" \
   -H "Content-Type: application/json" \
-  -d '{"to":"student@college.edu","template":"exam-otp",
-       "variables":{"name":"Asha","otp":"482913","expiresInMinutes":10}}'
-# 202 {"id":"…","status":"queued"}   — repeat with the same key returns 200 + same id
+  -d '{"to":"student@college.edu","template":"exam-otp","variables":{"name":"Asha","otp":"482913","expiresInMinutes":10}}'
+# -> 202 {"id":"…","status":"queued"}
+
+# an announcement to up to 10,000 recipients
+curl -X POST $API/v1/batches -H "Authorization: Bearer $KEY" -H "Idempotency-Key: exam-42-notice" \
+  -H "Content-Type: application/json" \
+  -d '{"template":"exam-instructions","variables":{"examName":"DBMS","startsAt":"10:00","examUrl":"https://…"},
+       "recipients":[{"to":"a@college.edu","variables":{"name":"A"}}, …]}'
+# -> 202 {"id":"…","state":"accepted","recipients":9998,"duplicatesRemoved":2,"suppressed":0}
 ```
 
-`GET /v1/emails/:id` returns status and attempt history; `GET /v1/templates` lists templates the app may use.
+| Endpoint | |
+| --- | --- |
+| `POST /v1/emails` | queue one message |
+| `GET /v1/emails/:id` | status, attempts, delivery events |
+| `POST /v1/batches` | queue a batch (validated and de-duplicated; OTP templates not allowed) |
+| `GET /v1/batches/:id` | state (`sending` → `awaiting_mta` → `completed`), progress, counts by status |
+| `GET /v1/batches/:id/recipients?status=&after=&limit=` | per-recipient results, paged |
+| `POST /v1/batches/:id/cancel` | cancel recipients not yet handed to Postfix |
+| `GET /v1/templates`, `GET /v1/usage` | templates the app may use; today's usage and quota |
+| `GET /metrics` | operator metrics (Prometheus), needs `METRICS_TOKEN` |
+| `GET/POST /u/:token` | public unsubscribe page / RFC 8058 one-click unsubscribe |
+| `POST /webhooks/ses` | optional SES adapter, off unless configured |
 
-## Sending routes
+Accepting a request means it is stored durably. It does not mean anyone received the email.
 
-`SMTP_ROUTES` in `.env` names the SMTP servers mail can go out through (e.g. `ses,selfhosted`); each
-route has its own `SMTP_<NAME>_*` settings. Apps use `DEFAULT_ROUTE` unless pointed elsewhere:
+## Templates
 
-```sh
-npm run create-app -- "Demo College" demo-exams exam exams@notify.example.com
-npm run set-route -- "Demo College" demo-exams selfhosted   # "default" switches it back
-```
-
-For a demo trial, also lock the app to your demo mailboxes, so it cannot reach a real student even by
-mistake (other recipients get `403 recipient_not_allowed`):
-
-```sh
-npm run set-recipients -- "Demo College" demo-exams demo1@gmail.com @demo.yourdomain.com   # "any" lifts it
-```
-
-A route change applies to the next send attempt, including queued messages. Every attempt records its
-route, so routes can be compared:
-
-```sql
-SELECT route, outcome, count(*) FROM delivery_attempts GROUP BY 1, 2 ORDER BY 1, 2;
-```
-
-## Delivery events (SES)
-
-With `SES_SNS_TOPIC_ARNS` and `SMTP_<ROUTE>_SES_CONFIGURATION_SET` set, SES reports what happened after it
-accepted each message, via SNS to `POST /webhooks/ses`. Messages move on to `delivered` or `bounced`,
-hard bounces and complaints are suppressed, and `GET /v1/emails/:id` lists the events. One-time AWS
-setup: [docs/ses-events-setup.md](docs/ses-events-setup.md).
-
-## Message lifecycle
-
-`queued → sending → sent` (accepted by relay), or `deferred` (temporary failure, retried with
-backoff) → eventually `sent` or `failed`. Recipients rejected with a 5xx at `RCPT TO` are added to
-the tenant's suppression list; later messages to them are stored as `suppressed` and not attempted.
-Delivery is at-least-once: a worker crash mid-send can cause a duplicate after its 5-minute lease expires.
-
-## Adding a template
-
-Create `templates/<id>/` with `meta.json`, `subject.hbs`, `html.hbs`, `text.hbs`:
+`templates/<id>/` holds `meta.json`, `subject.hbs`, `html.hbs` and `text.hbs`. Adding a mail type
+means adding a folder; no code change is needed.
 
 ```json
 { "description": "…", "products": ["exam"], "priority": 0,
   "required": ["name"], "optional": [], "sensitive": ["otp"] }
 ```
 
-Priority: `0` critical (OTP, password reset), `1` transactional, `2` bulk. `sensitive` variables are
-removed from the database once the message reaches a final state.
+- `priority`: `0` critical (OTP), `1` transactional, `2` bulk. Batches always use the bulk lane.
+- `sensitive` variables are deleted from the database once a message is final.
+- `"category": "marketing"` with a `"topic"` (newsletters) adds one-click unsubscribe and requires
+  `{{unsubscribeUrl}}` in the html and text. Unsubscribing stops only that topic.
+- HTML escapes variables, and subjects can't contain line breaks. Clients never send raw HTML.
 
-Newsletters and other opt-out mail use `"category": "marketing"` plus a `"topic"` (e.g.
-`alumni-newsletter`) and priority `2`. The worker fills in `{{unsubscribeUrl}}` (which the template must
-show in both html and text) and adds one-click `List-Unsubscribe` headers. Unsubscribing only stops
-that topic; transactional mail to the same person still goes out. Only send marketing mail to users
-who opted in — the service enforces opt-outs, the calling app owns consent.
+## Development
+
+```sh
+cp .env.example .env
+docker compose up -d --wait        # Postgres :5440, Mailpit (dev SMTP sink, UI http://localhost:8025)
+npm install
+npm run migrate
+npm run create-app -- "Demo College" exam-portal exam exams@notify.example.com   # prints an API key
+npm run dev:api & npm run dev:worker
+```
+
+The dev `.env` sends through a `relay` route to Mailpit and allows unverified sender domains. To run
+the real Postfix stack locally, use the end-to-end test below.
+
+## Tests
+
+| Command | What it covers | Needs |
+| --- | --- | --- |
+| `npm test` | unit: templates, DKIM signing (verified), VERP, Postfix log and DSN/ARF parsing, routes, policies | nothing |
+| `npm run test:integration` | API auth and tenant isolation, batches, tracker (restart, rotation), bounce receiver over SMTP, the worker process against an SMTP stub (failures, retries, crash recovery, OTP priority) | Postgres (`docker compose up -d postgres`) |
+| `deploy/e2e-selfhosted.sh` | the full Docker stack with real Postfix, DKIM and VERP, against a **simulated** recipient server: outcomes, late bounce, 300-recipient batch with a worker restart, open-relay probe | Docker |
+
+None of them deliver to real mailboxes; see [deliverability.md](docs/deliverability.md) for that.
+
+## Admin
+
+`npm run …` in development, `deploy/mailctl …` in production. Everything is audit-logged.
+
+- `domain add|records|verify|list`: sender domains, DKIM keys, DNS records
+- `create-app`: an app (tenant + product) with its first API key
+- `keys create|list|revoke`: independent, revocable API keys
+- `set-route`: optional extra routes (e.g. an explicitly configured relay)
+- `set-recipients`: allowlist for test apps

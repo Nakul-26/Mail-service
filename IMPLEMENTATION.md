@@ -76,7 +76,11 @@ parameters). Worth removing before sharing it.
       delivered / bounced / complaint handling with suppression, `events` in the status API,
       SES configuration set + message tag per route. Setup for the SES account owner:
       `docs/ses-events-setup.md`. Still open in M3: unsubscribe is done; self-hosted bounces come with Postfix.
-- [ ] **Next, in order**: batches (M4) → self-hosted Postfix + DKIM
+- [x] **Self-hosted delivery**: Postfix, DKIM, VERP, log tracker, bounce receiver, status model.
+- [x] **M4 – Batches & throttling**: `/v1/batches` with progress, results, cancel; bulk lane rate cap; Postfix per-destination limits.
+- [x] **M5 – Operations**: Dockerfile + Compose, metrics, monitor + alert webhook, backups (tested restore), deployment guide.
+- [ ] **Go-live on the server**: preflight, DNS + PTR, domain verify, warm-up (docs/deliverability.md §5), checklist below.
+- [ ] (superseded) **Next, in order**: batches (M4) → self-hosted Postfix + DKIM
       as the `selfhosted` route → production deploy (Dockerfile, backups, metrics; M5).
 - [ ] **M2 – Real relay + DNS**: pick relay (e.g. SES, Postmark, Brevo,
       Mailgun), configure `notify.<domain>` SPF/DKIM/DMARC(p=none), verify
@@ -91,6 +95,21 @@ parameters). Worth removing before sharing it.
       quotas, suppression management, key rotation.
 - [ ] **M7 – Acceptance**: the production checklist in `plan.md` §7, incl. an
       exam-day burst test.
+
+## 2026-10-27: fully self-hosted delivery
+
+The service no longer depends on SES or any external provider. See
+[docs/self-hosted-audit.md](docs/self-hosted-audit.md) for the audit and design. In summary: our own
+Postfix (outbound only, no open relay); DKIM signing in the worker; VERP return paths; a tracker
+for Postfix's log and bounce/complaint mail; finer statuses (`accepted_local` → `accepted_remote`,
+never "delivered" without evidence); batches; verified sender domains; key management; audit log;
+monitoring; and a Docker deployment with backups ([docs/deployment.md](docs/deployment.md)).
+The SES recommendation and SES milestones below are **superseded**; the SES event webhook remains
+only as an optional, off-by-default adapter.
+
+Before real traffic, direct delivery needs network conditions that only the production server can
+confirm: outbound port 25, a dedicated static IP, a PTR record, and a clean reputation. Check them
+with `deploy/preflight.sh` ([docs/deliverability.md](docs/deliverability.md)).
 
 ## Decisions from the stakeholder answers (2026-10-23)
 

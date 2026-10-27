@@ -1,4 +1,8 @@
-# SES delivery events: one-time setup
+# SES delivery events: one-time setup (optional adapter)
+
+> **Not needed for the self-hosted service.** Mail is delivered by our own Postfix and tracked from
+> its log and bounce messages (see [deliverability.md](deliverability.md)). This adapter is only for
+> an explicitly configured SES relay route, if one is ever added.
 
 Gives the mail service real delivery results from SES (delivered / bounced / complained) instead of
 only "SES accepted it". Takes about 10 minutes in the AWS account that owns SES.
