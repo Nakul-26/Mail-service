@@ -8,6 +8,7 @@ AWS account or webhook is needed to send or track mail.**
 - [docs/deployment.md](docs/deployment.md): deploying on the Linux server, operations, backups, rollback
 - [docs/deliverability.md](docs/deliverability.md): DNS, PTR, port 25, warm-up, bounces. Read this before sending real mail.
 - [docs/self-hosted-audit.md](docs/self-hosted-audit.md): how the SES dependency was removed
+- [examples/demo-portal](examples/demo-portal/README.md): a small sample app (OTP login, announcement batch) to try the service with a dummy inbox
 - [plan.md](plan.md) / [IMPLEMENTATION.md](IMPLEMENTATION.md): original plan and decisions
 
 ## How mail flows

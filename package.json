@@ -19,7 +19,8 @@
     "start:tracker": "node dist/src/tracker.js",
     "domain": "tsx scripts/domain.ts",
     "keys": "tsx scripts/keys.ts",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "demo": "tsx examples/demo-portal/server.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.9",

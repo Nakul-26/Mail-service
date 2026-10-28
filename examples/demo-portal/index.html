@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo Exam Portal</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#647089; --line:#dde1e8; --accent:#2f5bd3; --ok:#1d7f4e; --bad:#b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14171d; --card:#1d2129; --text:#e7eaf0; --muted:#98a2b6; --line:#2e3440; --accent:#7c9bff; --ok:#5fcf94; --bad:#ff8a80; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui, sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:24px 16px 48px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; margin-bottom:16px; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+  input { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:end; }
+  .row > div { flex:1 1 180px; }
+  button { margin-top:12px; padding:8px 14px; border:0; border-radius:6px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { margin-top:10px; font-size:14px; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .status { font-family:ui-monospace, monospace; font-size:13px; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:10px; margin-top:10px; white-space:pre-wrap; word-break:break-word; }
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:10px; display:flex; }
+  .bar span { display:block; height:100%; }
+  .note { font-size:13px; color:var(--muted); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Demo Exam Portal</h1>
+  <p class="sub">A sample app that sends OTPs and exam announcements through the Eclipse Labs Mail Service.
+    In development every email lands in <a href="http://localhost:8025" target="_blank" rel="noopener">Mailpit</a> (a dummy inbox); nothing leaves this machine.</p>
+
+  <section>
+    <h2>1. Log in with a one-time code</h2>
+    <div class="row">
+      <div><label for="name">Name</label><input id="name" value="Asha"></div>
+      <div><label for="email">Email</label><input id="email" type="email" value="asha@students.demo.test"></div>
+    </div>
+    <button id="sendOtp">Send code</button>
+    <div id="otpBox" hidden>
+      <label for="otp">Code from the email (open Mailpit)</label>
+      <div class="row"><div><input id="otp" inputmode="numeric" maxlength="6" autocomplete="one-time-code"></div></div>
+      <button id="verify">Log in</button>
+    </div>
+    <div id="otpMsg" class="msg"></div>
+    <div id="otpStatus" class="status" hidden></div>
+  </section>
+
+  <section>
+    <h2>2. Announce an exam to many candidates</h2>
+    <div class="row">
+      <div><label for="exam">Exam name</label><input id="exam" value="DBMS Mid-term"></div>
+      <div><label for="count">Number of dummy candidates (1–10,000)</label><input id="count" type="number" min="1" max="10000" value="200"></div>
+    </div>
+    <button id="announce">Send announcement</button>
+    <div id="batchMsg" class="msg"></div>
+    <div class="bar" id="bar" hidden><span id="barFinal" style="background:var(--ok)"></span><span id="barMta" style="background:var(--accent)"></span></div>
+    <div id="batchStatus" class="status" hidden></div>
+    <p class="note">Bulk mail goes through a rate-capped lane, so send an OTP while the announcement runs: it still arrives within a second or two.
+      With Mailpit, <code>accepted_local</code> (handed to the mail server) is the last status; with the self-hosted Postfix stack, messages continue to <code>accepted_remote</code>.</p>
+  </section>
+
+  <section>
+    <h2>3. Today's usage</h2>
+    <button id="usage">Refresh</button>
+    <div id="usageStatus" class="status" hidden></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+async function call(method, path, body) {
+  const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  return { ok: res.ok, body: await res.json().catch(() => ({})) };
+}
+function say(el, text, good) { el.textContent = text; el.className = 'msg ' + (good ? 'ok' : 'bad'); }
+function show(el, obj) { el.hidden = false; el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
+const FINAL = ['accepted_local', 'accepted_remote', 'delivered', 'bounced', 'rejected', 'failed', 'suppressed', 'cancelled'];
+
+let otpTimer;
+$('sendOtp').onclick = async () => {
+  $('sendOtp').disabled = true;
+  const r = await call('POST', '/api/otp/send', { name: $('name').value, email: $('email').value });
+  $('sendOtp').disabled = false;
+  if (!r.ok) return say($('otpMsg'), r.body.error + (r.body.detail ? ': ' + JSON.stringify(r.body.detail) : ''), false);
+  say($('otpMsg'), 'Code sent. Check Mailpit, then enter it below.', true);
+  $('otpBox').hidden = false; $('otp').focus();
+  const started = Date.now();
+  clearInterval(otpTimer);
+  const poll = async () => {
+    const s = await call('GET', '/api/email?id=' + encodeURIComponent(r.body.messageId));
+    if (!s.ok) return;
+    const b = s.body;
+    show($('otpStatus'), `message ${b.id}\nstatus: ${b.status}\nattempts: ${b.attempts}` +
+      (b.acceptedLocalAt ? `\nhanded to mail server after ${((new Date(b.acceptedLocalAt) - new Date(b.createdAt)) / 1000).toFixed(2)} s` : '') +
+      (b.lastError ? `\nlast error: ${b.lastError}` : ''));
+    if (FINAL.includes(b.status) || Date.now() - started > 60000) clearInterval(otpTimer);
+  };
+  poll(); otpTimer = setInterval(poll, 700);
+};
+$('verify').onclick = async () => {
+  const r = await call('POST', '/api/otp/verify', { email: $('email').value, otp: $('otp').value });
+  say($('otpMsg'), r.ok ? 'Logged in. The code worked.' : r.body.error, r.ok);
+  if (r.ok) $('otpBox').hidden = true;
+};
+
+let batchTimer;
+$('announce').onclick = async () => {
+  $('announce').disabled = true;
+  const r = await call('POST', '/api/announce', { examName: $('exam').value, count: $('count').value });
+  $('announce').disabled = false;
+  if (!r.ok) return say($('batchMsg'), 'Refused: ' + JSON.stringify(r.body), false);
+  say($('batchMsg'), `Batch accepted: ${r.body.recipients} recipients (${r.body.duplicatesRemoved} duplicates removed, ${r.body.suppressed} suppressed).`, true);
+  const total = r.body.recipients;
+  $('bar').hidden = false;
+  clearInterval(batchTimer);
+  const poll = async () => {
+    const s = await call('GET', '/api/batch?id=' + encodeURIComponent(r.body.id));
+    if (!s.ok) return;
+    const b = s.body, p = b.progress;
+    $('barFinal').style.width = (100 * p.final / total) + '%';
+    $('barMta').style.width = (100 * p.atMta / total) + '%';
+    show($('batchStatus'), `batch ${b.id}\nstate: ${b.state}\nnot yet at mail server: ${p.pending}\nat mail server: ${p.atMta}\nfinal: ${p.final}\ncounts: ${JSON.stringify(b.counts)}`);
+    if (p.pending === 0) clearInterval(batchTimer);
+  };
+  poll(); batchTimer = setInterval(poll, 1000);
+};
+
+$('usage').onclick = async () => { const r = await call('GET', '/api/usage'); show($('usageStatus'), r.body); };
+</script>
+</body>
+</html>
